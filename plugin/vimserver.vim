@@ -1,4 +1,4 @@
-if get(g:, 'loaded_vimserver')
+if exists('g:loaded_vimserver') || !exists('v:argv')
   finish
 endif
 let g:loaded_vimserver = 1
@@ -7,14 +7,6 @@ if &cp
   set nocp
 endif
 
-" dummy impl for old version vim. {{{
-if !exists('v:argv')
-  function! vimserver#main() abort
-  endfunction
-  finish
-endif
-" }}}
-
 " common func and env prepare {{{
 let s:is_nvim = has('nvim')
 let s:is_win32 = has('win32')
@@ -22,30 +14,25 @@ let s:is_win32 = has('win32')
 let s:job_start = function(s:is_nvim ? 'jobstart': 'job_start')
 let s:job_stop = function(s:is_nvim ? 'jobstop': 'job_stop')
 
-if s:is_win32
-  let s:vimserver_exe = expand('<sfile>:p:h:h') . '\vimserver-helper\vimserver-helper.exe'
-  " fallback to vimserver-helper in $PATH
-  if !executable(s:vimserver_exe)
-    let s:vimserver_exe = 'vimserver-helper'
-  endif
-else
-  let s:vimserver_exe = expand('<sfile>:p:h:h') . '/vimserver-helper/vimserver-helper'
-  " fallback to vimserver-helper in $PATH
-  if !executable(s:vimserver_exe)
-    let s:vimserver_exe = 'vimserver-helper'
-  endif
-  " fallback to vimserver-helper.sh
-  if !executable(s:vimserver_exe)
-    let s:vimserver_exe = expand('<sfile>:p:h:h') . '/bin/vimserver-helper.sh'
-  endif
+let s:vimserver_sh_source = expand('<sfile>:p:h:h') . '/source.d/vimserver.sh'
+let s:vimserver_exe = expand('<sfile>:p:h:h') . '/vimserver-helper/vimserver-helper'
+" fallback to vimserver-helper in $PATH
+if !executable(s:vimserver_exe)
+  let s:vimserver_exe = 'vimserver-helper'
+endif
+" fallback to vimserver-helper.zsh
+if !executable(s:vimserver_exe)
+  let s:vimserver_exe = expand('<sfile>:p:h:h') . '/bin/vimserver-helper.zsh'
 endif
 
-function! s:cmd_server(id)
-  return [s:vimserver_exe, a:id, 'listen']
+function! s:cmd_server(id) abort
+  let sh = match(s:vimserver_exe, '\.zsh$') >= 0 && s:is_win32 ? [g:vimserver_sh_path] : []
+  return sh + [s:vimserver_exe, a:id, 'listen']
 endfunction
 
-function! s:cmd_client(id)
-  return [s:vimserver_exe, a:id]
+function! s:cmd_client(id) abort
+  let sh = match(s:vimserver_exe, '\.zsh$') >= 0 && s:is_win32 ? [g:vimserver_sh_path] : []
+  return sh + [s:vimserver_exe, a:id]
 endfunction
 
 function! s:system(cmd, stdin)
@@ -71,24 +58,19 @@ endfunction
 " }}}
 
 function! s:reset_vimserver_env()
+  unlet $VIMSERVER_SH_SOURCE
   unlet $VIMSERVER_ID
   unlet $VIMSERVER_BIN
   unlet $VIMSERVER_CLIENT_PID
 endfunction
 
-function! vimserver#main() abort
+function! s:main() abort
   " has('vim_starting') check doesn't work for nvim. bug?
   if get(s:, 'called_main', 0)
     return
   endif
   let s:called_main = 1
 
-  if !executable(s:vimserver_exe)
-    if !exists('g:vimserver_ignore') || empty(g:vimserver_ignore)
-      echoerr 'vimserver executable not found!'
-    endif
-    return
-  endif
   " gvim always starts a vimserver.
   if has('gui_running')
     " unlet env here will execute unconditionally for nvim. bug?
@@ -131,9 +113,15 @@ function! s:server_handler(channel, msg, ...) abort
     if match(data[1], '^Tapi_') < 0
       echoerr 'vimserver: function not in whitelist!' | return
     endif
-    " data: ['call', funcname, argument, optional-pid]
-    " pid SHOULD NOT be trusted!
-    let pid = len(data) == 4 ? str2nr(data[3]) : -1
+    " data: ['call', funcname, argument, optional-pid, optional-tty]
+    " pid / tty SHOULD NOT be trusted!
+    let pid = len(data) >= 4 ? str2nr(data[3]) : -1
+    let tty = len(data) == 5 ? data[4] : ''
+    if pid is# 0 && len(data) == 4
+      " not pid, but tty.
+      let pid = -1
+      let tty = data[3]
+    endif
     let buffer = -1
     if s:is_nvim
       for l:i in getbufinfo()
@@ -144,7 +132,10 @@ function! s:server_handler(channel, msg, ...) abort
       endfor
     else
       for l:i in term_list()
-        if job_info(term_getjob(l:i)).process == pid
+        if (!empty(tty) && term_gettty(l:i) == tty)
+              \ || job_info(term_getjob(l:i)).process == pid
+          " term_gettty() returns empty in win10 (conpty), so also check
+          " whether tty is empty here.
           let buffer = l:i
           break
         endif
@@ -184,22 +175,19 @@ endfunction
 function! s:server() abort
   let bind_name = tempname()
   let job = s:job_start(s:cmd_server(bind_name),
-        \ {(s:is_nvim ? 'on_stdout' : 'callback'):
+        \ {(s:is_nvim ? 'on_stdout' : 'out_cb'):
         \ function('s:server_handler')})
-  let $VIMSERVER_ID = bind_name
-  let $VIMSERVER_BIN = s:vimserver_exe
+  " expose variables, since vim-sh plugin will clean these env variable.
+  " they may be required in other place (plugin), like popup terminal.
+  let g:vimserver_env = {
+        \'VIMSERVER_ID': bind_name, 'VIMSERVER_BIN': s:vimserver_exe,
+        \'VIMSERVER_SH_SOURCE': s:vimserver_sh_source,
+        \}
+
   augroup vimserver_clients_cleaner
     au!
     au WinEnter * call s:server_clients_cleaner()
   augroup END
-  if s:is_nvim
-    let s:vimserver_id = $VIMSERVER_ID
-    let s:vimserver_bin = $VIMSERVER_BIN
-    augroup vimserver_init
-      au!
-      au VimEnter * call s:nvim_env_set()
-    augroup END
-  endif
 endfunction
 
 function! s:client_handler(channel, msg, ...) abort
@@ -210,7 +198,7 @@ endfunction
 function! s:client(server_id) abort
   let bind_name = tempname()
   let job = s:job_start(s:cmd_server(bind_name),
-        \ {(s:is_nvim ? 'on_stdout' : 'callback'):
+        \ {(s:is_nvim ? 'on_stdout' : 'out_cb'):
         \ function('s:client_handler')})
   let client = bind_name
   call s:system(
@@ -234,13 +222,6 @@ function! s:client(server_id) abort
   endtry
 endfunction
 
-" nvim polyfill {{{
-if !s:is_nvim | finish | endif
-
-function! s:nvim_env_set()
-  let $VIMSERVER_ID = s:vimserver_id
-  let $VIMSERVER_BIN = s:vimserver_bin
-endfunction
-" }}}
+call s:main()
 
 " vim:fdm=marker

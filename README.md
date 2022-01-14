@@ -6,28 +6,27 @@
 ## Requirement
 - vim 8.1.2233+ (job feature) or neovim 0.5.0+; (`v:argv`)
 
-- vimserver-helper binary (*optional*; required for Windows OS; see below for
-  installation method);
+- vimserver-helper binary (*optional*; see below for installation method);
 
-- `socat` (*optional*; required for bundled shell script
-  [bin/vimserver-helper.sh](bin/vimserver-helper.sh) if vimserver-helper
+- `zsh` (*optional*; required for bundled shell script
+  [bin/vimserver-helper.zsh](bin/vimserver-helper.zsh) if vimserver-helper
 binary is not available).
 
 ## Setup
 ```vim
-" source plugin/vimserver.vim at very top of your vimrc (or use ":runtime"),
-" then call vimserver#main()
+" source plugin/vimserver.vim at very top of your vimrc (or use ":runtime").
 " If using ":runtime", then you should set &rtp correctly.
 runtime vim-vimserver/plugin/vimserver.vim
-call vimserver#main()
+" pass environment variable to subprocess;
+" you may want to set env in `term_start()`, like this:
+"   term_start(..., #{env: g:vimserver_env})
+let $VIMSERVER_ID = g:vimserver_env['VIMSERVER_ID']
 ```
 
-To ignore startup error (`vimserver executable not found!`), set variable like
-this:
+To use bundled shell script (`vimserver-helper.zsh`) in win32, variable
+`g:vimserver_sh_path` need to be set to path to zsh.
 
-```vim
-let g:vimserver_ignore = 1
-```
+Define variable `g:loaded_vimserver` to skip loading this plugin.
 
 ## Usage
 - Inside terminal session, call `vim [filename]...` to open buffer in outside
@@ -42,6 +41,34 @@ If no filename argument is provided, vim will just open a new empty window.
 
 If multiple filename arguments are provided, only the first one will be shown,
 other files can be accessed with `:next` / `:prev` (`:help arglist` for help).
+
+## Usage (`cd` in vim buffer follow embedded terminal)
+
+Add this after `PS1` / `precmd` config in shell's rc:
+
+```sh
+if [ -f "$VIMSERVER_SH_SOURCE" ]; then
+    source "$VIMSERVER_SH_SOURCE"
+fi
+```
+
+This feature requires a vim User Function `Tapi_cd` defined in vim plugin.
+
+example definition:
+
+```vim
+function! Tapi_cd(nr, arg)
+  if bufnr() == a:nr
+    let p = a:arg[0]
+    execute 'lcd' fnameescape(p)
+  endif
+endfunction
+```
+
+## Info
+This plugin defines variable `g:vimserver_env` (dict of string), which can be
+passed to other functions (like `term_start`) in case environment variables
+`VIMSERVER_*` are unset in some place.
 
 ## vimserver-helper binary
 It should work on all major platforms, including at least Windows, Linux, Mac.
@@ -76,8 +103,6 @@ $0 {server_filename}
   `$0` above with `"$VIMSERVER_BIN"`.
 
 - Replace `{server_filename}` with `$VIMSERVER_ID`.
-
-- For terminal-api style client (bundled shell script), `jq` is required.
 
 TODO: allow passing non-string argument in terminal-api mode.
 
