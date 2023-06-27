@@ -22,16 +22,22 @@ if !executable(s:vimserver_exe)
 endif
 " fallback to vimserver-helper.zsh
 if !executable(s:vimserver_exe)
-  let s:vimserver_exe = expand('<sfile>:p:h:h') . '/bin/vimserver-helper.zsh'
+  if (!s:is_win32 && executable('zsh')) ||
+        \ (s:is_win32 && exists('g:vimserver_zsh_path'))
+    let s:vimserver_exe = expand('<sfile>:p:h:h') . '/bin/vimserver-helper.zsh'
+  else
+    " TODO report error?
+    finish
+  endif
 endif
 
 function! s:cmd_server(id) abort
-  let sh = match(s:vimserver_exe, '\.zsh$') >= 0 && s:is_win32 ? [g:vimserver_sh_path] : []
+  let sh = match(s:vimserver_exe, '\.zsh$') >= 0 && s:is_win32 ? [g:vimserver_zsh_path] : []
   return sh + [s:vimserver_exe, a:id, 'listen']
 endfunction
 
 function! s:cmd_client(id) abort
-  let sh = match(s:vimserver_exe, '\.zsh$') >= 0 && s:is_win32 ? [g:vimserver_sh_path] : []
+  let sh = match(s:vimserver_exe, '\.zsh$') >= 0 && s:is_win32 ? [g:vimserver_zsh_path] : []
   return sh + [s:vimserver_exe, a:id]
 endfunction
 
@@ -77,7 +83,10 @@ function! s:main() abort
     call s:reset_vimserver_env()
   endif
   if empty($VIMSERVER_ID)
-    call s:server()
+    augroup vimserver
+      au!
+      au VimEnter * call s:server()
+    augroup END
   else
     if !&diff
       call s:client($VIMSERVER_ID)
@@ -92,6 +101,13 @@ endfunction
 
 " handle reloading
 let s:clients = get(s:, 'clients', {})
+
+function! s:server_clients_cleaner_new(id)
+  if !empty(get(s:clients, a:id))
+    call s:clients[a:id]()
+    call remove(s:clients, a:id)
+  endif
+endfunction
 
 function! s:server_clients_cleaner(...)
   for key in keys(s:clients)
@@ -186,7 +202,11 @@ function! s:server() abort
 
   augroup vimserver_clients_cleaner
     au!
-    au WinEnter * call s:server_clients_cleaner()
+    if exists('##WinClosed')
+      au WinClosed * call s:server_clients_cleaner_new(expand('<amatch>'))
+    else
+      au WinEnter * call s:server_clients_cleaner()
+    endif
   augroup END
 endfunction
 
@@ -224,4 +244,4 @@ endfunction
 
 call s:main()
 
-" vim:fdm=marker
+" vim:fdm=marker sw=2
